@@ -3,4 +3,6 @@ target/
 *.so
 *.ta
 **/*.uuid
-**/target/
+ta/target/
+host/target/
+
