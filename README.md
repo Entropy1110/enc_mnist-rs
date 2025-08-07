@@ -1,7 +1,5 @@
 # README.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Overview
 
 This is `enc_mnist-rs`, an encrypted MNIST machine learning inference system built on OP-TEE TrustZone. It demonstrates secure machine learning where models are encrypted and processed entirely within the Trusted Execution Environment (TEE), preventing the host from accessing plaintext models.
