@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "optee-utee")]
 use optee_utee::{trace_println, ErrorKind, Parameter, Result};
 
+#[cfg(feature = "optee-utee")]
 pub fn copy_to_output(param: &mut Parameter, data: &[u8]) -> Result<()> {
     let mut output = unsafe { param.as_memref()? };
 

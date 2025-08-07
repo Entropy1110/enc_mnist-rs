@@ -27,15 +27,31 @@ struct EncryptedModelFile {
     encrypted_data: Vec<u8>,
 }
 
+#[derive(serde::Deserialize)]
+struct ChunkedEncryptedModelFile {
+    algorithm: String,
+    chunk_size: usize,
+    total_chunks: usize,
+    original_size: usize,
+    chunks: Vec<EncryptedChunk>,
+}
+
+#[derive(serde::Deserialize)]
+struct EncryptedChunk {
+    id: usize,
+    size: usize,
+    data: Vec<u8>,
+}
+
 #[derive(Parser, Debug)]
 pub struct Args {
     /// The path of the model.
     #[arg(short, long)]
     model: String,
-    /// The path of the input binary, must be 768 byte binary, can be multiple
+    /// The path of the input binary, must be IMAGE_SIZE byte binary, can be multiple
     #[arg(short, long)]
     binary: Vec<String>,
-    /// The path of the input image, must be dimension of 28x28, can be multiple
+    /// The path of the input image, must be dimension of 224x224x3, can be multiple
     #[arg(short, long)]
     image: Vec<String>,
 }
@@ -47,9 +63,19 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
     let record = if model_path.extension().and_then(|s| s.to_str()) == Some("json") {
         println!("Detected encrypted model file");
         let encrypted_data = std::fs::read(&model_path)?;
-        let encrypted_model: EncryptedModelFile = serde_json::from_slice(&encrypted_data)?;
-        println!("Model algorithm: {}", encrypted_model.algorithm);
-        encrypted_model.encrypted_data
+        
+        // Try to parse as chunked model first
+        if let Ok(chunked_model) = serde_json::from_slice::<ChunkedEncryptedModelFile>(&encrypted_data) {
+            println!("Model algorithm: {} (chunked)", chunked_model.algorithm);
+            println!("Reconstructing model from {} chunks ({} bytes)", 
+                     chunked_model.total_chunks, chunked_model.original_size);
+            reconstruct_chunked_model(chunked_model)?
+        } else {
+            // Fall back to single encrypted model
+            let encrypted_model: EncryptedModelFile = serde_json::from_slice(&encrypted_data)?;
+            println!("Model algorithm: {}", encrypted_model.algorithm);
+            encrypted_model.encrypted_data
+        }
     } else {
         println!("Loading plaintext model (legacy mode)");
         std::fs::read(&model_path)?
@@ -75,7 +101,7 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
         .image
         .iter()
         .map(|v| {
-            let img = image::open(v).unwrap().to_luma8();
+            let img = image::open(v).unwrap().resize_exact(224, 224, image::imageops::FilterType::Triangle).to_rgb8();
             let bytes = img.as_bytes();
             anyhow::ensure!(bytes.len() == IMAGE_SIZE);
             TryInto::<Image>::try_into(bytes)
@@ -102,4 +128,38 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
     println!("Infer Success");
 
     Ok(())
+}
+
+fn reconstruct_chunked_model(chunked_model: ChunkedEncryptedModelFile) -> anyhow::Result<Vec<u8>> {
+    println!("Connecting to TA for chunked model decryption...");
+    let mut ctx = Context::new()?;
+    let mut decryptor = crate::tee::ModelDecryptorTaConnector::new(&mut ctx)?;
+    let mut reconstructed_data = Vec::with_capacity(chunked_model.original_size);
+    
+    // Sort chunks by ID to ensure correct order
+    let mut sorted_chunks = chunked_model.chunks;
+    sorted_chunks.sort_by_key(|chunk| chunk.id);
+    
+    for chunk in sorted_chunks {
+        println!("Decrypting chunk {}/{} ({} encrypted bytes)", 
+                 chunk.id + 1, chunked_model.total_chunks, chunk.data.len());
+        
+        let decrypted_chunk = decryptor.decrypt_model(&chunk.data)?;
+        
+        if decrypted_chunk.len() != chunk.size {
+            anyhow::bail!("Chunk {} size mismatch: expected {}, got {}", 
+                         chunk.id, chunk.size, decrypted_chunk.len());
+        }
+        
+        reconstructed_data.extend_from_slice(&decrypted_chunk);
+        println!("Chunk {}/{} decrypted successfully", chunk.id + 1, chunked_model.total_chunks);
+    }
+    
+    if reconstructed_data.len() != chunked_model.original_size {
+        anyhow::bail!("Reconstructed model size mismatch: expected {}, got {}", 
+                     chunked_model.original_size, reconstructed_data.len());
+    }
+    
+    println!("Model successfully reconstructed: {} bytes", reconstructed_data.len());
+    Ok(reconstructed_data)
 }

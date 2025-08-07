@@ -126,6 +126,7 @@ fn invoke_command(cmd_id: u32, params: &mut Parameters) -> Result<()> {
         0 => invoke_inference(params),
         #[cfg(feature = "encrypt-model")]
         1 => invoke_encrypt_model(params),
+        2 => invoke_decrypt_model(params),
         _ => {
             trace_println!("[!] Unknown command ID: {}", cmd_id);
             Err(ErrorKind::BadParameters.into())
@@ -212,6 +213,41 @@ fn invoke_encrypt_model(params: &mut Parameters) -> Result<()> {
     p1.set_updated_size(encrypted_model.len());
     
     trace_println!("[+] Encrypted model returned to host");
+    Ok(())
+}
+
+fn invoke_decrypt_model(params: &mut Parameters) -> Result<()> {
+    trace_println!("[+] Processing model decryption request");
+    
+    let mut p0 = unsafe { params.0.as_memref()? };
+    let mut p1 = unsafe { params.1.as_memref()? };
+    
+    let encrypted_data = p0.buffer();
+    trace_println!("[+] Received encrypted data: {} bytes", encrypted_data.len());
+    
+    let aes_key = if ta_aes_key_exists() {
+        trace_println!("[+] Loading existing TA AES key for decryption");
+        load_ta_aes_key()?
+    } else {
+        trace_println!("[!] No TA AES key found for decryption");
+        return Err(ErrorKind::ItemNotFound.into());
+    };
+    
+    let mut key_manager = KeyManager::new(aes_key)?;
+    
+    trace_println!("[+] Decrypting data with TA AES key...");
+    let decrypted_data = key_manager.decrypt_data(encrypted_data)?;
+    trace_println!("[+] Data decrypted, size: {} bytes", decrypted_data.len());
+    
+    if p1.buffer().len() < decrypted_data.len() {
+        trace_println!("[!] Output buffer too small: {} < {}", p1.buffer().len(), decrypted_data.len());
+        return Err(ErrorKind::ShortBuffer.into());
+    }
+    
+    p1.buffer()[..decrypted_data.len()].copy_from_slice(&decrypted_data);
+    p1.set_updated_size(decrypted_data.len());
+    
+    trace_println!("[+] Decrypted data returned to host");
     Ok(())
 }
 

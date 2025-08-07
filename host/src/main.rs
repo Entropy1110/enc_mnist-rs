@@ -17,7 +17,6 @@
 
 mod commands;
 mod tee;
-mod encrypt;
 
 use clap::{Parser, Subcommand};
 

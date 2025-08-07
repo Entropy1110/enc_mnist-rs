@@ -19,8 +19,8 @@ use optee_utee_build::{Error, RustEdition, TaConfig};
 
 fn main() -> Result<(), Error> {
     let config = TaConfig::new_default_with_cargo_env(proto::inference::UUID)?
-        .ta_data_size(1 * 1024 * 1024)
-        .ta_stack_size(1 * 1024 * 1024)
-        .ta_framework_stack_size(8192);
+        .ta_data_size(8 * 1024 * 1024)
+        .ta_stack_size(4 * 1024 * 1024)
+        .ta_framework_stack_size(16 * 1024 * 1024);
     optee_utee_build::build(RustEdition::Before2024, config)
 }

@@ -27,7 +27,7 @@ publish = false
 
 [features]
 default = ["encrypt-model"]
-encrypt-model = []
+encrypt-model = ["dep:common"]
 
 [dependencies]
 proto = { path = "../proto" }
@@ -45,6 +45,12 @@ ureq = "3.0.8"
 flate2 = "1.1.0"
 aes = "0.8.4"
 cbc = "0.1.2"
+burn = { version = "0.17", features = ["ndarray"] }
+burn-import = { version = "0.17" }
+
+[dependencies.common]
+path = "../ta/common"
+optional = true
 
 [profile.release]
 lto = true

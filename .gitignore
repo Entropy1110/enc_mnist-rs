@@ -1,0 +1,6 @@
+target/
+*.bin
+*.so
+*.ta
+**/*.uuid
+**/target/
