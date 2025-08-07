@@ -1,0 +1,1 @@
+{"rustc":1322836030605327028,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[13625485746686963219,"build_script_build",false,9623415467745903305]],"local":[{"RerunIfChanged":{"output":"aarch64-unknown-linux-gnu/release/build/anyhow-ffbee6ff59115af3/output","paths":["src/nightly.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

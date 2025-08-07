@@ -1,0 +1,4 @@
+cargo:rustc-link-search=/opt/teaclave/optee/optee_os/out/arm-plat-vexpress/export-ta_arm64/lib
+cargo:rustc-link-lib=static=utee
+cargo:rustc-link-lib=static=utils
+cargo:rustc-link-lib=static=mbedtls

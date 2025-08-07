@@ -1,0 +1,1 @@
+{"rustc":1322836030605327028,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[16423363646924133360,"build_script_build",false,8455381313710761104]],"local":[{"RerunIfEnvChanged":{"var":"OPTEE_CLIENT_EXPORT","val":"/opt/teaclave/optee/optee_client/export_arm64"}}],"rustflags":[],"config":0,"compile_kind":0}

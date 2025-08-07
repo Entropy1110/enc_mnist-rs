@@ -1,0 +1,3 @@
+cargo:rerun-if-env-changed=OPTEE_CLIENT_EXPORT
+cargo:rustc-link-search=/opt/teaclave/optee/optee_client/export_arm64/usr/lib
+cargo:rustc-link-lib=dylib=teec
