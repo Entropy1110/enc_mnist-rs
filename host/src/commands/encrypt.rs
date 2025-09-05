@@ -1,19 +1,9 @@
 use anyhow::Result;
+use clap::Args as ClapArgs;
+use rand::RngCore;
+use serde_json;
 use std::fs;
 use std::path::Path;
-use serde_json;
-use clap::Args as ClapArgs;
-use optee_teec::Context;
-use burn::{
-    backend::NdArray,
-    tensor::{backend::Backend, Device},
-    record::{FullPrecisionSettings, Recorder},
-    module::Module,
-};
-use burn_import::pytorch::{LoadArgs, PyTorchFileRecorder};
-
-#[cfg(feature = "encrypt-model")]
-use common::Model;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -22,10 +12,14 @@ pub struct Args {
     
     #[arg(long)]
     output: String,
+
+    /// 32-byte AES key in hex (64 hex chars)
+    #[arg(long)]
+    key: String,
 }
 
 pub fn execute(args: &Args) -> Result<()> {
-    encrypt_model(&args.input, &args.output)
+    encrypt_model(&args.input, &args.output, &args.key)
 }
 
 #[derive(serde::Serialize)]
@@ -50,142 +44,79 @@ struct EncryptedChunk {
     data: Vec<u8>,
 }
 
-pub fn encrypt_model<P: AsRef<Path>>(input_path: P, output_path: P) -> Result<()> {
+pub fn encrypt_model<P: AsRef<Path>>(input_path: P, output_path: P, key_hex: &str) -> Result<()> {
     println!("Encrypting model: {} -> {}", 
              input_path.as_ref().display(), 
              output_path.as_ref().display());
 
-    let input_path_ref = input_path.as_ref();
-    let model_data = if let Some(extension) = input_path_ref.extension() {
-        if extension == "pth" {
-            #[cfg(feature = "encrypt-model")]
-            {
-                println!("Detected PyTorch model file (.pth)");
-                convert_pytorch_to_burn_binary(input_path_ref)?
-            }
-            #[cfg(not(feature = "encrypt-model"))]
-            {
-                anyhow::bail!("PyTorch model support requires 'encrypt-model' feature");
-            }
-        } else {
-            println!("Loading as Burn binary model");
-            fs::read(&input_path)?
-        }
-    } else {
-        println!("No extension detected, loading as Burn binary model");
-        fs::read(&input_path)?
-    };
-    
+    let model_data = fs::read(&input_path)?;
     println!("Model data prepared: {} bytes", model_data.len());
 
-    // Use chunked encryption for large models (>1MB)
-    if model_data.len() > 1024 * 1024 {
-        encrypt_model_chunked(&model_data, &output_path)?;
-    } else {
-        println!("Connecting to TA for model encryption...");
-        let mut ctx = Context::new()?;
-        let mut encryptor = crate::tee::ModelEncryptorTaConnector::new(&mut ctx)?;
-        
-        println!("Requesting TA to encrypt model...");
-        let encrypted_data = encryptor.encrypt_model(&model_data)?;
-        println!("Model encrypted by TA: {} bytes", encrypted_data.len());
-        
-        let encrypted_model = EncryptedModelFile {
-            algorithm: "AES-256-CBC".to_string(),
-            encrypted_data,
-        };
+    // Key from CLI (hex string)
+    let key_bytes = parse_hex_key_32(key_hex)?;
 
-        let json_data = serde_json::to_vec_pretty(&encrypted_model)?;
-        fs::write(&output_path, json_data)?;
-    }
+    // Encrypt on host using provided key
+    let encrypted_data = encrypt_with_key_host(&key_bytes, &model_data)?;
+    println!("Model encrypted on host: {} bytes", encrypted_data.len());
+
+    let encrypted_model = EncryptedModelFile {
+        algorithm: "AES-256-CBC".to_string(),
+        encrypted_data,
+    };
+
+    let json_data = serde_json::to_vec_pretty(&encrypted_model)?;
+    fs::write(&output_path, json_data)?;
     
     println!("Encrypted model saved to: {}", output_path.as_ref().display());
     println!("Host no longer has access to plaintext model!");
     Ok(())
 }
 
-#[cfg(feature = "encrypt-model")]
-fn convert_pytorch_to_burn_binary(pytorch_path: &Path) -> Result<Vec<u8>> {
-    println!("Converting PyTorch model to Burn binary format...");
-    
-    let device: Device<NdArray> = Default::default();
-    
-    // Use common Model structure (same as TA)
-    let empty_model = Model::<NdArray>::new(&device);
-    
-    // Load PyTorch weights with key remapping for MobileNetV2
-    let load_args = LoadArgs::new(pytorch_path.to_path_buf())
-        .with_key_remap("features\\.(0|18)\\.0.(.+)", "features.$1.conv.$2")
-        .with_key_remap("features\\.(0|18)\\.1.(.+)", "features.$1.norm.$2")
-        .with_key_remap("features\\.1\\.conv.0.0.(.+)", "features.1.dw.conv.$1")
-        .with_key_remap("features\\.1\\.conv.0.1.(.+)", "features.1.dw.norm.$1")
-        .with_key_remap("features\\.1\\.conv.1.(.+)", "features.1.pw_linear.conv.$1")
-        .with_key_remap("features\\.1\\.conv.2.(.+)", "features.1.pw_linear.norm.$1")
-        .with_key_remap("features\\.([2-9]|1[0-7])\\.conv.0.0.(.+)", "features.$1.pw.conv.$2")
-        .with_key_remap("features\\.([2-9]|1[0-7])\\.conv.0.1.(.+)", "features.$1.pw.norm.$2")
-        .with_key_remap("features\\.([2-9]|1[0-7])\\.conv.1.0.(.+)", "features.$1.dw.conv.$2")
-        .with_key_remap("features\\.([2-9]|1[0-7])\\.conv.1.1.(.+)", "features.$1.dw.norm.$2")
-        .with_key_remap("features\\.([2-9]|1[0-7])\\.conv.2.(.+)", "features.$1.pw_linear.conv.$2")
-        .with_key_remap("features\\.([2-9]|1[0-7])\\.conv.3.(.+)", "features.$1.pw_linear.norm.$2")
-        .with_key_remap("classifier.1.(.+)", "classifier.linear.$1");
-    
-    println!("Loading PyTorch weights...");
-    let record = PyTorchFileRecorder::<FullPrecisionSettings>::new().load(load_args, &device)?;
-    
-    // Apply weights to model
-    let model_with_weights = empty_model.load_record(record);
-    
-    // Serialize to Burn binary format
-    let recorder = burn::record::BinBytesRecorder::<FullPrecisionSettings>::new();
-    let binary_data = recorder.record(model_with_weights.into_record(), ())?;
-    
-    println!("PyTorch model converted to Burn binary: {} bytes", binary_data.len());
-    Ok(binary_data)
-}
+// Note: MobileNetV2 / PyTorch .pth conversion removed. Provide Burn binary (.bin).
 
-fn encrypt_model_chunked<P: AsRef<Path>>(model_data: &[u8], output_path: P) -> Result<()> {
-    use proto::CHUNK_SIZE;
-    
-    println!("Using chunked encryption for large model ({} bytes)", model_data.len());
-    println!("Chunk size: {} bytes", CHUNK_SIZE);
-    
-    let mut ctx = Context::new()?;
-    let mut encryptor = crate::tee::ModelEncryptorTaConnector::new(&mut ctx)?;
-    let mut encrypted_chunks = Vec::new();
-    
-    // Split model data into chunks
-    let chunks: Vec<&[u8]> = model_data.chunks(CHUNK_SIZE).collect();
-    let total_chunks = chunks.len();
-    
-    println!("Processing {} chunks...", total_chunks);
-    
-    for (i, chunk) in chunks.iter().enumerate() {
-        println!("Encrypting chunk {}/{} ({} bytes)", i + 1, total_chunks, chunk.len());
-        
-        let encrypted_chunk_data = encryptor.encrypt_model(chunk)?;
-        
-        encrypted_chunks.push(EncryptedChunk {
-            id: i,
-            size: chunk.len(),
-            data: encrypted_chunk_data,
-        });
-        
-        println!("Chunk {}/{} encrypted successfully", i + 1, total_chunks);
+fn parse_hex_key_32(hex_str: &str) -> Result<[u8; 32]> {
+    let s = hex_str.trim();
+    if s.len() != 64 {
+        anyhow::bail!("Key must be 64 hex chars (32 bytes)");
     }
-    
-    let chunked_encrypted_model = ChunkedEncryptedModelFile {
-        algorithm: "AES-256-CBC-Chunked".to_string(),
-        chunk_size: CHUNK_SIZE,
-        total_chunks,
-        original_size: model_data.len(),
-        chunks: encrypted_chunks,
-    };
-    
-    let json_data = serde_json::to_vec_pretty(&chunked_encrypted_model)?;
-    fs::write(&output_path, json_data)?;
-    
-    println!("Chunked encrypted model saved: {} chunks, {} bytes total", 
-             total_chunks, model_data.len());
-    Ok(())
+    let mut key = [0u8; 32];
+    for i in 0..32 {
+        let byte_str = &s[i * 2..i * 2 + 2];
+        key[i] = u8::from_str_radix(byte_str, 16)
+            .map_err(|_| anyhow::anyhow!("Invalid hex at position {}", i))?;
+    }
+    Ok(key)
 }
 
+fn encrypt_with_key_host(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
+    use aes::Aes256;
+    use cbc::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
+    type Aes256CbcEnc = cbc::Encryptor<Aes256>;
+
+    // Build plaintext: [len:4][data][zero padding to 16 bytes]
+    let block = 16usize;
+    let orig_len = data.len();
+    let mut plaintext = Vec::with_capacity(4 + orig_len + block);
+    plaintext.extend_from_slice(&(orig_len as u32).to_le_bytes());
+    plaintext.extend_from_slice(data);
+    let pad_len = (block - (plaintext.len() % block)) % block;
+    if pad_len > 0 {
+        plaintext.extend(std::iter::repeat(0u8).take(pad_len));
+    }
+
+    // Random IV
+    let mut iv = [0u8; 16];
+    rand::rng().fill_bytes(&mut iv);
+
+    let mut buf = plaintext.clone();
+    // CBC-NOPAD style (buffer must be block aligned)
+    let encrypted = Aes256CbcEnc::new(key.into(), (&iv).into())
+        .encrypt_padded_mut::<NoPadding>(&mut buf, plaintext.len())
+        .map_err(|_| anyhow::anyhow!("CBC encryption failed"))?;
+
+    // Output: IV || ciphertext
+    let mut out = Vec::with_capacity(16 + encrypted.len());
+    out.extend_from_slice(&iv);
+    out.extend_from_slice(encrypted);
+    Ok(out)
+}

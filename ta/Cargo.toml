@@ -42,7 +42,7 @@ optee-utee-build = { path = "../../../optee-utee-build" }
 proto = { path = "../proto" }
 
 bytemuck = { version = "1.21.0", features = ["min_const_generics"] }
-burn = { version = "0.17", default-features = false, features = ["ndarray", "autodiff"] }
+burn = { version = "0.17", default-features = false, features = ["ndarray"] }
 spin = "0.9.8"
 serde = { version = "1.0.218", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0.139", default-features = false, features = ["alloc"] }

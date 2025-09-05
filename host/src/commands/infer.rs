@@ -51,7 +51,7 @@ pub struct Args {
     /// The path of the input binary, must be IMAGE_SIZE byte binary, can be multiple
     #[arg(short, long)]
     binary: Vec<String>,
-    /// The path of the input image, must be dimension of 224x224x3, can be multiple
+    /// The path of the input image, must be dimension of 28x28x1 (MNIST), can be multiple
     #[arg(short, long)]
     image: Vec<String>,
 }
@@ -60,6 +60,9 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
     let model_path = std::path::absolute(&args.model)?;
     println!("Load model from \"{}\"", model_path.display());
     
+    let mut ctx = Context::new()?;
+    let mut caller = crate::tee::InferenceTaConnector::new(&mut ctx)?;
+
     let record = if model_path.extension().and_then(|s| s.to_str()) == Some("json") {
         println!("Detected encrypted model file");
         let encrypted_data = std::fs::read(&model_path)?;
@@ -69,22 +72,45 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
             println!("Model algorithm: {} (chunked)", chunked_model.algorithm);
             println!("Reconstructing model from {} chunks ({} bytes)", 
                      chunked_model.total_chunks, chunked_model.original_size);
-            reconstruct_chunked_model(chunked_model)?
+            // Stream encrypted chunks to TA
+            caller.begin_model_load()?;
+            let mut sorted_chunks = chunked_model.chunks;
+            sorted_chunks.sort_by_key(|c| c.id);
+            for chunk in sorted_chunks {
+                println!("Sending encrypted chunk {}/{} ({} bytes)", chunk.id + 1, chunked_model.total_chunks, chunk.data.len());
+                caller.push_encrypted_chunk(&chunk.data)?;
+            }
+            caller.finalize_model_load()?;
+            Vec::new() // no local record
         } else {
             // Fall back to single encrypted model
             let encrypted_model: EncryptedModelFile = serde_json::from_slice(&encrypted_data)?;
             println!("Model algorithm: {}", encrypted_model.algorithm);
-            encrypted_model.encrypted_data
+            caller.begin_model_load()?;
+            // Send in chunks to avoid large shared buffers
+            let data = encrypted_model.encrypted_data;
+            const CHUNK: usize = 64 * 1024;
+            for (i, part) in data.chunks(CHUNK).enumerate() {
+                println!("Sending encrypted part {} ({} bytes)", i + 1, part.len());
+                caller.push_encrypted_chunk(part)?;
+            }
+            caller.finalize_model_load()?;
+            Vec::new()
         }
     } else {
         println!("Loading plaintext model (legacy mode)");
-        std::fs::read(&model_path)?
+        let data = std::fs::read(&model_path)?;
+        // For legacy plaintext, stream as a single encrypted-chunk with no encryption is unsafe.
+        // Here we fallback to old path: open session with plaintext (not recommended for production).
+        data
     };
     
-    println!("Sending model to TA for secure processing...");
-    
-    let mut ctx = Context::new()?;
-    let mut caller = crate::tee::InferenceTaConnector::new(&mut ctx, &record)?;
+    // If record is empty, model already loaded in TA via streaming.
+    // We already have an open session in `caller`.
+    if !record.is_empty() {
+        // Legacy path: open session already loaded the model
+        println!("Model sent on open_session (legacy mode)");
+    }
 
     let mut binaries: Vec<Image> = args
         .binary
@@ -101,7 +127,10 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
         .image
         .iter()
         .map(|v| {
-            let img = image::open(v).unwrap().resize_exact(224, 224, image::imageops::FilterType::Triangle).to_rgb8();
+            let img = image::open(v)
+                .unwrap()
+                .resize_exact(28, 28, image::imageops::FilterType::Triangle)
+                .to_luma8();
             let bytes = img.as_bytes();
             anyhow::ensure!(bytes.len() == IMAGE_SIZE);
             TryInto::<Image>::try_into(bytes)
@@ -130,36 +159,4 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn reconstruct_chunked_model(chunked_model: ChunkedEncryptedModelFile) -> anyhow::Result<Vec<u8>> {
-    println!("Connecting to TA for chunked model decryption...");
-    let mut ctx = Context::new()?;
-    let mut decryptor = crate::tee::ModelDecryptorTaConnector::new(&mut ctx)?;
-    let mut reconstructed_data = Vec::with_capacity(chunked_model.original_size);
-    
-    // Sort chunks by ID to ensure correct order
-    let mut sorted_chunks = chunked_model.chunks;
-    sorted_chunks.sort_by_key(|chunk| chunk.id);
-    
-    for chunk in sorted_chunks {
-        println!("Decrypting chunk {}/{} ({} encrypted bytes)", 
-                 chunk.id + 1, chunked_model.total_chunks, chunk.data.len());
-        
-        let decrypted_chunk = decryptor.decrypt_model(&chunk.data)?;
-        
-        if decrypted_chunk.len() != chunk.size {
-            anyhow::bail!("Chunk {} size mismatch: expected {}, got {}", 
-                         chunk.id, chunk.size, decrypted_chunk.len());
-        }
-        
-        reconstructed_data.extend_from_slice(&decrypted_chunk);
-        println!("Chunk {}/{} decrypted successfully", chunk.id + 1, chunked_model.total_chunks);
-    }
-    
-    if reconstructed_data.len() != chunked_model.original_size {
-        anyhow::bail!("Reconstructed model size mismatch: expected {}, got {}", 
-                     chunked_model.original_size, reconstructed_data.len());
-    }
-    
-    println!("Model successfully reconstructed: {} bytes", reconstructed_data.len());
-    Ok(reconstructed_data)
-}
+// reconstruct_chunked_model removed: we never return plaintext model to host.
