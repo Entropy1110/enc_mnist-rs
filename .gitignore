@@ -1,4 +1,10 @@
 **/target/*
+# Additional cargo build metadata and nested artifacts
+**/.fingerprint/
+**/*.d
+**/.rustc_info.json
+host/target/
+ta/target/
 *.bin
 *.so
 *.ta

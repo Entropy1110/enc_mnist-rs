@@ -1,4 +1,0 @@
-cargo:rustc-link-search=/root/incubator-teaclave-trustzone-sdk/optee/optee_os/out/arm-plat-stm32mp2/export-ta_arm64/lib
-cargo:rustc-link-lib=static=utee
-cargo:rustc-link-lib=static=utils
-cargo:rustc-link-lib=static=mbedtls
