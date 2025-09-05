@@ -28,6 +28,7 @@ use burn::{
 mod key_manager;
 mod secure_storage;
 
+use alloc::vec::Vec;
 use key_manager::KeyManager;
 use secure_storage::{store_ta_aes_key, load_ta_aes_key, ta_aes_key_exists};
 
@@ -46,6 +47,7 @@ use spin::Mutex;
 type NoStdModel = Model<NdArray>;
 const DEVICE: NdArrayDevice = NdArrayDevice::Cpu;
 static MODEL: Mutex<Option<NoStdModel>> = Mutex::new(Option::None);
+static MODEL_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 #[ta_create]
 fn create() -> Result<()> {
@@ -56,55 +58,8 @@ fn create() -> Result<()> {
 #[ta_open_session]
 fn open_session(params: &mut Parameters) -> Result<()> {
     let mut p0 = unsafe { params.0.as_memref()? };
-    
-    let aes_key = if ta_aes_key_exists() {
-        trace_println!("[+] Loading existing TA AES key from secure storage");
-        load_ta_aes_key()?
-    } else {
-        trace_println!("[+] Generating new TA AES key and storing securely");
-        let new_key = KeyManager::generate_aes_key()?;
-        store_ta_aes_key(&new_key)?;
-        new_key
-    };
-    
-    unsafe {
-        KEY_MANAGER = Some(KeyManager::new(aes_key)?);
-    }
-
-    let model_data = p0.buffer().to_vec();
-    trace_println!("[+] Received model data: {} bytes", model_data.len());
-    
-    // Skip model import if this is just a dummy session for encryption
-    if model_data.len() < 1000 {
-        trace_println!("[+] Small data detected, skipping model import (encryption-only session)");
-        return Ok(());
-    }
-    
-    let key_manager = unsafe { KEY_MANAGER.as_mut().ok_or(ErrorKind::BadState)? };
-    
-    trace_println!("[+] Decrypting model data with TA AES key...");
-    let decrypted_data = key_manager.decrypt_data(&model_data)?;
-    trace_println!("[+] Model decrypted, size: {} bytes", decrypted_data.len());
-
-    trace_println!("[+] Acquiring model lock...");
-    let mut model = MODEL.lock();
-    trace_println!("[+] Importing model with {} bytes...", decrypted_data.len());
-    
-    let imported_model = match Model::import(&DEVICE, decrypted_data) {
-        Ok(m) => {
-            trace_println!("[+] Model import successful");
-            m
-        },
-        Err(err) => {
-            trace_println!("[!] Model import failed: {:?}", err);
-            return Err(ErrorKind::BadParameters.into());
-        }
-    };
-    
-    trace_println!("[+] Replacing model in lock...");
-    model.replace(imported_model);
-    trace_println!("[+] Model replacement completed");
-
+    let size = p0.buffer().len();
+    trace_println!("[+] Open session; initial buffer size: {} bytes (ignored)", size);
     Ok(())
 }
 
@@ -126,6 +81,11 @@ fn invoke_command(cmd_id: u32, params: &mut Parameters) -> Result<()> {
         0 => invoke_inference(params),
         #[cfg(feature = "encrypt-model")]
         1 => invoke_encrypt_model(params),
+        2 => invoke_decrypt_model(params),
+        3 => invoke_store_key(params),
+        4 => invoke_begin_model_load(params),
+        5 => invoke_push_encrypted_chunk(params),
+        6 => invoke_finalize_model_load(params),
         _ => {
             trace_println!("[!] Unknown command ID: {}", cmd_id);
             Err(ErrorKind::BadParameters.into())
@@ -212,6 +172,114 @@ fn invoke_encrypt_model(params: &mut Parameters) -> Result<()> {
     p1.set_updated_size(encrypted_model.len());
     
     trace_println!("[+] Encrypted model returned to host");
+    Ok(())
+}
+
+fn invoke_decrypt_model(params: &mut Parameters) -> Result<()> {
+    trace_println!("[+] Processing model decryption request");
+    
+    let mut p0 = unsafe { params.0.as_memref()? };
+    let mut p1 = unsafe { params.1.as_memref()? };
+    
+    let encrypted_data = p0.buffer();
+    trace_println!("[+] Received encrypted data: {} bytes", encrypted_data.len());
+    
+    if !ta_aes_key_exists() {
+        trace_println!("[!] No TA AES key found for decryption");
+        return Err(ErrorKind::ItemNotFound.into());
+    }
+    let aes_key = load_ta_aes_key()?;
+    
+    let mut key_manager = KeyManager::new(aes_key)?;
+    
+    trace_println!("[+] Decrypting data with TA AES key...");
+    let decrypted_data = key_manager.decrypt_data(encrypted_data)?;
+    trace_println!("[+] Data decrypted, size: {} bytes", decrypted_data.len());
+    
+    if p1.buffer().len() < decrypted_data.len() {
+        trace_println!("[!] Output buffer too small: {} < {}", p1.buffer().len(), decrypted_data.len());
+        return Err(ErrorKind::ShortBuffer.into());
+    }
+    
+    p1.buffer()[..decrypted_data.len()].copy_from_slice(&decrypted_data);
+    p1.set_updated_size(decrypted_data.len());
+    
+    trace_println!("[+] Decrypted data returned to host");
+    Ok(())
+}
+
+fn invoke_store_key(params: &mut Parameters) -> Result<()> {
+    trace_println!("[+] Processing key provision request");
+    let mut p0 = unsafe { params.0.as_memref()? };
+    let key_buf = p0.buffer();
+    if key_buf.len() != 32 {
+        trace_println!("[!] Invalid key size: {}", key_buf.len());
+        return Err(ErrorKind::BadParameters.into());
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(key_buf);
+    store_ta_aes_key(&key)?;
+    unsafe {
+        KEY_MANAGER = Some(KeyManager::new(key)?);
+    }
+    trace_println!("[+] Secret key stored in secure storage");
+    Ok(())
+}
+
+fn ensure_key_manager() -> Result<()> {
+    if !ta_aes_key_exists() {
+        return Err(ErrorKind::ItemNotFound.into());
+    }
+    if unsafe { KEY_MANAGER.is_none() } {
+        let aes_key = load_ta_aes_key()?;
+        unsafe { KEY_MANAGER = Some(KeyManager::new(aes_key)?) };
+    }
+    Ok(())
+}
+
+fn invoke_begin_model_load(_params: &mut Parameters) -> Result<()> {
+    trace_println!("[+] Begin model load");
+    ensure_key_manager()?;
+    let mut buf = MODEL_BUF.lock();
+    buf.clear();
+    Ok(())
+}
+
+fn invoke_push_encrypted_chunk(params: &mut Parameters) -> Result<()> {
+    let mut p0 = unsafe { params.0.as_memref()? };
+    let enc = p0.buffer();
+    if enc.is_empty() { return Ok(()); }
+    let mut buf = MODEL_BUF.lock();
+    let before = buf.len();
+    // Append encrypted bytes as-is; decrypt once at finalize
+    buf.extend_from_slice(enc);
+    trace_println!("[+] Encrypted chunk appended: {} -> {}", before, buf.len());
+    Ok(())
+}
+
+fn invoke_finalize_model_load(_params: &mut Parameters) -> Result<()> {
+    trace_println!("[+] Finalize model load");
+    // Decrypt full encrypted buffer once
+    ensure_key_manager()?;
+    let encrypted = {
+        let mut buf = MODEL_BUF.lock();
+        core::mem::take(&mut *buf)
+    };
+    let key_manager = unsafe { KEY_MANAGER.as_mut().ok_or(ErrorKind::BadState)? };
+    trace_println!("[+] Decrypting accumulated encrypted model: {} bytes", encrypted.len());
+    let plain = key_manager.decrypt_data(&encrypted)?;
+    trace_println!("[+] Decrypted model size: {} bytes", plain.len());
+    trace_println!("[+] Importing model with {} bytes...", plain.len());
+    let imported_model = match Model::import(&DEVICE, plain) {
+        Ok(m) => m,
+        Err(_err) => {
+            trace_println!("[!] Model import failed");
+            return Err(ErrorKind::BadParameters.into());
+        }
+    };
+    let mut model = MODEL.lock();
+    model.replace(imported_model);
+    trace_println!("[+] Model loaded and installed");
     Ok(())
 }
 

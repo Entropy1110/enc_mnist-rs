@@ -25,8 +25,12 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 
+[features]
+default = ["encrypt-model"]
+encrypt-model = []
+
 [dependencies]
-common = { path = "../common" }
+common = { path = "../common", features = ["optee-utee"] }
 proto = { workspace = true }
 optee-utee-sys = { workspace = true }
 optee-utee = { workspace = true }

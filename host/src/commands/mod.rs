@@ -16,5 +16,7 @@
 // under the License.
 
 pub mod infer;
-pub mod serve;
 pub mod encrypt;
+pub mod store_key;
+#[cfg(feature = "encrypt-model")]
+pub mod verify_model;

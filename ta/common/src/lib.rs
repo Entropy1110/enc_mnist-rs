@@ -21,5 +21,5 @@ extern crate alloc;
 mod model;
 mod utils;
 
-pub use model::Model;
+pub use model::*;
 pub use utils::*;

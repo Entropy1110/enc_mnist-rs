@@ -20,6 +20,10 @@ pub mod inference;
 
 pub const IMAGE_HEIGHT: usize = 28;
 pub const IMAGE_WIDTH: usize = 28;
-pub const IMAGE_SIZE: usize = IMAGE_HEIGHT * IMAGE_WIDTH;
+pub const IMAGE_CHANNELS: usize = 1;
+pub const IMAGE_SIZE: usize = IMAGE_HEIGHT * IMAGE_WIDTH * IMAGE_CHANNELS;
 pub const NUM_CLASSES: usize = 10;
 pub type Image = [u8; IMAGE_SIZE];
+
+// Chunked encryption constants
+pub const CHUNK_SIZE: usize = 1024 * 1024;

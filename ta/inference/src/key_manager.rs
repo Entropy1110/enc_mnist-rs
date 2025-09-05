@@ -24,9 +24,16 @@ impl KeyManager {
 
     pub fn encrypt_data(&mut self, data: &[u8]) -> Result<alloc::vec::Vec<u8>> {
         let block_size = 16;
-        let padded_len = ((data.len() + block_size - 1) / block_size) * block_size;
-        let mut padded_data = data.to_vec();
-        padded_data.resize(padded_len, 0);
+        let original_len = data.len();
+        
+        // 원본 길이를 4바이트로 인코딩 후 데이터 앞에 추가
+        let mut data_with_len = alloc::vec![0u8; 4 + data.len()];
+        data_with_len[0..4].copy_from_slice(&(original_len as u32).to_le_bytes());
+        data_with_len[4..].copy_from_slice(data);
+        
+        // 전체를 패딩
+        let padded_len = ((data_with_len.len() + block_size - 1) / block_size) * block_size;
+        data_with_len.resize(padded_len, 0);
 
         self.init_encrypt_cipher()?;
         
@@ -37,10 +44,10 @@ impl KeyManager {
         if let Some(ref mut cipher) = self.cipher {
             cipher.init(&iv);
             let mut encrypted = alloc::vec![0u8; padded_len];
-            let encrypted_len = cipher.update(&padded_data, &mut encrypted)?;
+            let encrypted_len = cipher.update(&data_with_len, &mut encrypted)?;
             encrypted.truncate(encrypted_len);
             
-            // Prepend IV to encrypted data
+            // 결과: IV (16 bytes) + 암호화된 데이터 (길이 정보 포함)
             let mut result = alloc::vec![0u8; 16 + encrypted_len];
             result[0..16].copy_from_slice(&iv);
             result[16..].copy_from_slice(&encrypted);
@@ -51,14 +58,14 @@ impl KeyManager {
     }
 
     pub fn decrypt_data(&mut self, encrypted_data: &[u8]) -> Result<alloc::vec::Vec<u8>> {
-        // Check minimum length (IV + at least one block)
+        // Check minimum length (IV + 최소 한 블록)
         if encrypted_data.len() < 32 {
             return Err(ErrorKind::BadParameters.into());
         }
         
         self.init_decrypt_cipher()?;
         
-        // Extract IV from first 16 bytes - copy to fixed array
+        // Extract IV from first 16 bytes
         let mut iv = [0u8; 16];
         iv.copy_from_slice(&encrypted_data[0..16]);
         let ciphertext = &encrypted_data[16..];
@@ -68,7 +75,22 @@ impl KeyManager {
             let mut decrypted = alloc::vec![0u8; ciphertext.len()];
             let decrypted_len = cipher.update(ciphertext, &mut decrypted)?;
             decrypted.truncate(decrypted_len);
-            Ok(decrypted)
+            
+            // 첫 4바이트에서 원본 길이 추출
+            if decrypted.len() < 4 {
+                return Err(ErrorKind::BadParameters.into());
+            }
+            
+            let original_len = u32::from_le_bytes([
+                decrypted[0], decrypted[1], decrypted[2], decrypted[3]
+            ]) as usize;
+            
+            if original_len + 4 > decrypted.len() {
+                return Err(ErrorKind::BadParameters.into());
+            }
+            
+            // 실제 데이터만 반환
+            Ok(decrypted[4..4 + original_len].to_vec())
         } else {
             Err(ErrorKind::BadState.into())
         }

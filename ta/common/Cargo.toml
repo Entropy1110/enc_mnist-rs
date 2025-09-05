@@ -25,8 +25,12 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+optee-utee = ["dep:optee-utee-sys", "dep:optee-utee"]
+
 [dependencies]
 proto = { workspace = true }
-optee-utee-sys = { workspace = true }
-optee-utee = { workspace = true }
-burn = { workspace = true }
+optee-utee-sys = { workspace = true, optional = true }
+optee-utee = { workspace = true, optional = true }
+burn = { workspace = true, features = ["ndarray"] }
