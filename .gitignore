@@ -1,8 +1,6 @@
-target/
+**/target/*
 *.bin
 *.so
 *.ta
 **/*.uuid
-ta/target/
-host/target/
 AGENT.md
