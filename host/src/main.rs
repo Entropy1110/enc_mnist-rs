@@ -33,6 +33,7 @@ enum Commands {
     #[cfg(feature = "encrypt-model")]
     EncryptModel(commands::encrypt::Args),
     StoreKey(commands::store_key::Args),
+    #[cfg(feature = "encrypt-model")]
     VerifyModel(commands::verify_model::Args),
 }
 
@@ -44,6 +45,7 @@ fn main() -> anyhow::Result<()> {
         #[cfg(feature = "encrypt-model")]
         Commands::EncryptModel(args) => commands::encrypt::execute(&args),
         Commands::StoreKey(args) => commands::store_key::execute(&args),
+        #[cfg(feature = "encrypt-model")]
         Commands::VerifyModel(args) => commands::verify_model::execute(&args),
     }
 }

@@ -18,4 +18,5 @@
 pub mod infer;
 pub mod encrypt;
 pub mod store_key;
+#[cfg(feature = "encrypt-model")]
 pub mod verify_model;
