@@ -30,7 +30,7 @@ mod secure_storage;
 
 use alloc::vec::Vec;
 use key_manager::KeyManager;
-use secure_storage::{store_ta_aes_key, load_ta_aes_key, ta_aes_key_exists};
+use secure_storage::{store_ta_aes_key, load_ta_aes_key, ta_aes_key_exists, store_model_bytes, load_model_bytes, model_bytes_exists};
 
 
 
@@ -115,6 +115,29 @@ fn invoke_inference(params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Tensor conversion completed");
 
     trace_println!("[+] Getting model from lock...");
+    {
+        let has_model = MODEL.lock().is_some();
+        if !has_model {
+            trace_println!("[+] Model not loaded in memory; checking secure storage...");
+            if model_bytes_exists() {
+                trace_println!("[+] Found model in secure storage; loading...");
+                let plain = load_model_bytes()?;
+                let imported_model = match Model::import(&DEVICE, plain) {
+                    Ok(m) => m,
+                    Err(_err) => {
+                        trace_println!("[!] Model import from storage failed");
+                        return Err(ErrorKind::BadParameters.into());
+                    }
+                };
+                let mut mg = MODEL.lock();
+                mg.replace(imported_model);
+                trace_println!("[+] Model loaded from secure storage");
+            } else {
+                trace_println!("[!] No model in memory or secure storage");
+                return Err(ErrorKind::ItemNotFound.into());
+            }
+        }
+    }
     let model_guard = MODEL.lock();
     let model = model_guard.as_ref().ok_or(ErrorKind::CorruptObject)?;
     trace_println!("[+] Model retrieved successfully");
@@ -270,6 +293,8 @@ fn invoke_finalize_model_load(_params: &mut Parameters) -> Result<()> {
     let plain = key_manager.decrypt_data(&encrypted)?;
     trace_println!("[+] Decrypted model size: {} bytes", plain.len());
     trace_println!("[+] Importing model with {} bytes...", plain.len());
+    // Persist model bytes to secure storage
+    store_model_bytes(&plain)?;
     let imported_model = match Model::import(&DEVICE, plain) {
         Ok(m) => m,
         Err(_err) => {
