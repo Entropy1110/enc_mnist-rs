@@ -97,10 +97,10 @@ pub fn load_model_bytes() -> Result<alloc::vec::Vec<u8>> {
     ) {
         Ok(object) => {
             let info = object.info()?;
-            let size = info.data_size();
-            let mut buf = alloc::vec![0u8; size];
+            let size_u32 = info.data_size() as u32;
+            let mut buf = alloc::vec![0u8; size_u32 as usize];
             let read = object.read(&mut buf)?;
-            if read != size { return Err(ErrorKind::ShortBuffer.into()); }
+            if read != size_u32 { return Err(ErrorKind::ShortBuffer.into()); }
             Ok(buf)
         }
         Err(e) => Err(e),

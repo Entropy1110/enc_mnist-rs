@@ -26,8 +26,8 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["encrypt-model"]
-encrypt-model = ["dep:common"]
+default = ["provision"]
+provision = []
 
 [dependencies]
 proto = { path = "../proto" }

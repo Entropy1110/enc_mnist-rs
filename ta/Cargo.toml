@@ -31,8 +31,8 @@ repository = "https://github.com/apache/incubator-teaclave-trustzone-sdk.git"
 authors = ["Teaclave Contributors <dev@teaclave.apache.org>"]
 
 [workspace.features]
-default = ["encrypt-model"]
-encrypt-model = []
+default = ["provision"]
+provision = []
 
 [workspace.dependencies]
 optee-utee-sys = { path = "../../../optee-utee/optee-utee-sys" }

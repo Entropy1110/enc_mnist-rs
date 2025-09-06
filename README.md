@@ -49,17 +49,17 @@ make NO_FEATURES="--no-default-features" all
 
 ### Host Application Usage
 ```bash
-# 1) Provision the TA key (32 bytes hex = 64 chars)
-./enc_mnist-rs store-key --key 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+# 1) Provision plaintext model into TA secure storage (one-time, build with provision feature)
+# Build with provision enabled (host + TA):
+#   make FEATURES="provision" all
+# Then run provisioning:
+./enc_mnist-rs provision-model --model ./model_mnist.bin
 
-# 2) Encrypt plaintext Burn record on host with the same key
-./enc_mnist-rs encrypt-model \
-  --input ./model_mnist.bin \
-  --output ./model_enc.json \
-  --key 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-
-# 3) Inference (streams encrypted model to TA, then infers)
-./enc_mnist-rs infer --model ./model_enc.json -i ./samples/7.png
+# 2) Inference (loads model from TA secure storage)
+# Optional: rebuild without provision for production (removes provisioning endpoints)
+#   make no-encrypt            # example: minimal features
+# or make FEATURES="" all      # remove provision
+./enc_mnist-rs infer -i ./samples/7.png
 
 # (Optional) Verify plaintext model record is compatible with TA loader (burn 0.17)
 ./enc_mnist-rs verify-model --input ./model_mnist.bin

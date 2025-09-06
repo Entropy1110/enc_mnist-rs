@@ -26,8 +26,8 @@ repository.workspace = true
 edition.workspace = true
 
 [features]
-default = ["encrypt-model"]
-encrypt-model = []
+default = ["provision"]
+provision = []
 
 [dependencies]
 common = { path = "../common", features = ["optee-utee"] }

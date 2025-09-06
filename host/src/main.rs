@@ -30,11 +30,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Infer(commands::infer::Args),
-    #[cfg(feature = "encrypt-model")]
-    EncryptModel(commands::encrypt::Args),
-    StoreKey(commands::store_key::Args),
-    #[cfg(feature = "encrypt-model")]
-    VerifyModel(commands::verify_model::Args),
+    #[cfg(feature = "provision")]
+    ProvisionModel(commands::provision::Args),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -42,10 +39,7 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Infer(args) => commands::infer::execute(&args),
-        #[cfg(feature = "encrypt-model")]
-        Commands::EncryptModel(args) => commands::encrypt::execute(&args),
-        Commands::StoreKey(args) => commands::store_key::execute(&args),
-        #[cfg(feature = "encrypt-model")]
-        Commands::VerifyModel(args) => commands::verify_model::execute(&args),
+        #[cfg(feature = "provision")]
+        Commands::ProvisionModel(args) => commands::provision::execute(&args),
     }
 }

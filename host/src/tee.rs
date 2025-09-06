@@ -39,18 +39,21 @@ impl InferenceTaConnector {
         Ok(Self { sess: ctx.open_session_with_operation(uuid, &mut op)? })
     }
 
+    #[cfg(feature = "provision")]
     pub fn begin_model_load(&mut self) -> optee_teec::Result<()> {
         let mut op = Operation::new(4, ParamNone, ParamNone, ParamNone, ParamNone);
         self.sess.invoke_command(4, &mut op)?;
         Ok(())
     }
 
+    #[cfg(feature = "provision")]
     pub fn push_encrypted_chunk(&mut self, chunk: &[u8]) -> optee_teec::Result<()> {
         let mut op = Operation::new(5, ParamTmpRef::new_input(chunk), ParamNone, ParamNone, ParamNone);
         self.sess.invoke_command(5, &mut op)?;
         Ok(())
     }
 
+    #[cfg(feature = "provision")]
     pub fn finalize_model_load(&mut self) -> optee_teec::Result<()> {
         let mut op = Operation::new(6, ParamNone, ParamNone, ParamNone, ParamNone);
         self.sess.invoke_command(6, &mut op)?;

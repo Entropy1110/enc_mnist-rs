@@ -25,16 +25,14 @@ use burn::{
 };
 
 
-mod key_manager;
 mod secure_storage;
 
 use alloc::vec::Vec;
-use key_manager::KeyManager;
-use secure_storage::{store_ta_aes_key, load_ta_aes_key, ta_aes_key_exists, store_model_bytes, load_model_bytes, model_bytes_exists};
+use secure_storage::{store_model_bytes, load_model_bytes, model_bytes_exists};
 
 
 
-static mut KEY_MANAGER: Option<KeyManager> = None;
+// No key manager; provisioning receives plaintext and stores internally.
 
 use common::{copy_to_output, Model};
 use optee_utee::{
@@ -47,6 +45,7 @@ use spin::Mutex;
 type NoStdModel = Model<NdArray>;
 const DEVICE: NdArrayDevice = NdArrayDevice::Cpu;
 static MODEL: Mutex<Option<NoStdModel>> = Mutex::new(Option::None);
+#[cfg(feature = "provision")]
 static MODEL_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 #[ta_create]
@@ -79,13 +78,10 @@ fn invoke_command(cmd_id: u32, params: &mut Parameters) -> Result<()> {
     
     match cmd_id {
         0 => invoke_inference(params),
-        #[cfg(feature = "encrypt-model")]
-        1 => invoke_encrypt_model(params),
-        2 => invoke_decrypt_model(params),
-        3 => invoke_store_key(params),
-        4 => invoke_begin_model_load(params),
-        5 => invoke_push_encrypted_chunk(params),
-        6 => invoke_finalize_model_load(params),
+        // No encrypt/decrypt/store-key commands; only provision/infer remain.
+        #[cfg(feature = "provision")] 4 => invoke_begin_model_load(params),
+        #[cfg(feature = "provision")] 5 => invoke_push_encrypted_chunk(params),
+        #[cfg(feature = "provision")] 6 => invoke_finalize_model_load(params),
         _ => {
             trace_println!("[!] Unknown command ID: {}", cmd_id);
             Err(ErrorKind::BadParameters.into())
@@ -160,138 +156,37 @@ fn invoke_inference(params: &mut Parameters) -> Result<()> {
     copy_to_output(&mut params.1, &result)
 }
 
-#[cfg(feature = "encrypt-model")]
-fn invoke_encrypt_model(params: &mut Parameters) -> Result<()> {
-    trace_println!("[+] Processing model encryption request");
-    
-    let mut p0 = unsafe { params.0.as_memref()? };
-    let mut p1 = unsafe { params.1.as_memref()? };
-    
-    let model_data = p0.buffer();
-    trace_println!("[+] Received model data: {} bytes", model_data.len());
-    
-    let aes_key = if ta_aes_key_exists() {
-        trace_println!("[+] Loading existing TA AES key for encryption");
-        load_ta_aes_key()?
-    } else {
-        trace_println!("[+] Generating new TA AES key for encryption");
-        let new_key = KeyManager::generate_aes_key()?;
-        store_ta_aes_key(&new_key)?;
-        new_key
-    };
-    
-    let mut key_manager = KeyManager::new(aes_key)?;
-    
-    trace_println!("[+] Encrypting model with TA AES key...");
-    let encrypted_model = key_manager.encrypt_data(model_data)?;
-    trace_println!("[+] Model encrypted, size: {} bytes", encrypted_model.len());
-    
-    if p1.buffer().len() < encrypted_model.len() {
-        trace_println!("[!] Output buffer too small: {} < {}", p1.buffer().len(), encrypted_model.len());
-        return Err(ErrorKind::ShortBuffer.into());
-    }
-    
-    p1.buffer()[..encrypted_model.len()].copy_from_slice(&encrypted_model);
-    p1.set_updated_size(encrypted_model.len());
-    
-    trace_println!("[+] Encrypted model returned to host");
-    Ok(())
-}
+// No encrypt/decrypt/store-key in this configuration.
 
-fn invoke_decrypt_model(params: &mut Parameters) -> Result<()> {
-    trace_println!("[+] Processing model decryption request");
-    
-    let mut p0 = unsafe { params.0.as_memref()? };
-    let mut p1 = unsafe { params.1.as_memref()? };
-    
-    let encrypted_data = p0.buffer();
-    trace_println!("[+] Received encrypted data: {} bytes", encrypted_data.len());
-    
-    if !ta_aes_key_exists() {
-        trace_println!("[!] No TA AES key found for decryption");
-        return Err(ErrorKind::ItemNotFound.into());
-    }
-    let aes_key = load_ta_aes_key()?;
-    
-    let mut key_manager = KeyManager::new(aes_key)?;
-    
-    trace_println!("[+] Decrypting data with TA AES key...");
-    let decrypted_data = key_manager.decrypt_data(encrypted_data)?;
-    trace_println!("[+] Data decrypted, size: {} bytes", decrypted_data.len());
-    
-    if p1.buffer().len() < decrypted_data.len() {
-        trace_println!("[!] Output buffer too small: {} < {}", p1.buffer().len(), decrypted_data.len());
-        return Err(ErrorKind::ShortBuffer.into());
-    }
-    
-    p1.buffer()[..decrypted_data.len()].copy_from_slice(&decrypted_data);
-    p1.set_updated_size(decrypted_data.len());
-    
-    trace_println!("[+] Decrypted data returned to host");
-    Ok(())
-}
-
-fn invoke_store_key(params: &mut Parameters) -> Result<()> {
-    trace_println!("[+] Processing key provision request");
-    let mut p0 = unsafe { params.0.as_memref()? };
-    let key_buf = p0.buffer();
-    if key_buf.len() != 32 {
-        trace_println!("[!] Invalid key size: {}", key_buf.len());
-        return Err(ErrorKind::BadParameters.into());
-    }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(key_buf);
-    store_ta_aes_key(&key)?;
-    unsafe {
-        KEY_MANAGER = Some(KeyManager::new(key)?);
-    }
-    trace_println!("[+] Secret key stored in secure storage");
-    Ok(())
-}
-
-fn ensure_key_manager() -> Result<()> {
-    if !ta_aes_key_exists() {
-        return Err(ErrorKind::ItemNotFound.into());
-    }
-    if unsafe { KEY_MANAGER.is_none() } {
-        let aes_key = load_ta_aes_key()?;
-        unsafe { KEY_MANAGER = Some(KeyManager::new(aes_key)?) };
-    }
-    Ok(())
-}
-
+#[cfg(feature = "provision")]
 fn invoke_begin_model_load(_params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Begin model load");
-    ensure_key_manager()?;
     let mut buf = MODEL_BUF.lock();
     buf.clear();
     Ok(())
 }
 
+#[cfg(feature = "provision")]
 fn invoke_push_encrypted_chunk(params: &mut Parameters) -> Result<()> {
     let mut p0 = unsafe { params.0.as_memref()? };
     let enc = p0.buffer();
     if enc.is_empty() { return Ok(()); }
     let mut buf = MODEL_BUF.lock();
     let before = buf.len();
-    // Append encrypted bytes as-is; decrypt once at finalize
+    // Append plaintext chunk directly (provision in plaintext)
     buf.extend_from_slice(enc);
-    trace_println!("[+] Encrypted chunk appended: {} -> {}", before, buf.len());
+    trace_println!("[+] Plain chunk appended: {} -> {}", before, buf.len());
     Ok(())
 }
 
+#[cfg(feature = "provision")]
 fn invoke_finalize_model_load(_params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Finalize model load");
-    // Decrypt full encrypted buffer once
-    ensure_key_manager()?;
-    let encrypted = {
+    // Take accumulated plaintext buffer
+    let plain = {
         let mut buf = MODEL_BUF.lock();
         core::mem::take(&mut *buf)
     };
-    let key_manager = unsafe { KEY_MANAGER.as_mut().ok_or(ErrorKind::BadState)? };
-    trace_println!("[+] Decrypting accumulated encrypted model: {} bytes", encrypted.len());
-    let plain = key_manager.decrypt_data(&encrypted)?;
-    trace_println!("[+] Decrypted model size: {} bytes", plain.len());
     trace_println!("[+] Importing model with {} bytes...", plain.len());
     // Persist model bytes to secure storage
     store_model_bytes(&plain)?;
