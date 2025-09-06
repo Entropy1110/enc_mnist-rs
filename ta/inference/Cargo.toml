@@ -39,9 +39,6 @@ serde_json = { workspace = true }
 bytemuck = { workspace = true }
 spin = { workspace = true }
 
-[features]
-default = ["encrypt-model"]
-encrypt-model = []
 
 [build-dependencies]
 proto = { workspace = true }
