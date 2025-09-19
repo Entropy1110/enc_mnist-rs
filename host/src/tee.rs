@@ -155,23 +155,23 @@ impl ModelDecryptorTaConnector {
         Ok(Self { sess })
     }
 
-    pub fn decrypt_model(&mut self, encrypted_data: &[u8]) -> optee_teec::Result<Vec<u8>> {
-        let mut decrypted_output = vec![0_u8; encrypted_data.len() + 1024]; // Extra space
-        let size = {
-            let mut op = Operation::new(
-                2, // Command ID for model decryption
-                ParamTmpRef::new_input(encrypted_data),
-                ParamTmpRef::new_output(&mut decrypted_output),
-                ParamNone,
-                ParamNone,
-            );
-            self.sess.invoke_command(2, &mut op)?;
-            op.parameters().1.updated_size()
-        };
+    // pub fn decrypt_model(&mut self, encrypted_data: &[u8]) -> optee_teec::Result<Vec<u8>> {
+    //     let mut decrypted_output = vec![0_u8; encrypted_data.len() + 1024]; // Extra space
+    //     let size = {
+    //         let mut op = Operation::new(
+    //             2, // Command ID for model decryption
+    //             ParamTmpRef::new_input(encrypted_data),
+    //             ParamTmpRef::new_output(&mut decrypted_output),
+    //             ParamNone,
+    //             ParamNone,
+    //         );
+    //         self.sess.invoke_command(2, &mut op)?;
+    //         op.parameters().1.updated_size()
+    //     };
 
-        decrypted_output.truncate(size);
-        Ok(decrypted_output)
-    }
+    //     decrypted_output.truncate(size);
+    //     Ok(decrypted_output)
+    // }
 }
 
 pub struct KeyProvisionTaConnector {

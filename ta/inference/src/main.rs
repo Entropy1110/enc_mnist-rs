@@ -30,7 +30,7 @@ mod secure_storage;
 
 use alloc::vec::Vec;
 use key_manager::KeyManager;
-use secure_storage::{store_ta_aes_key, load_ta_aes_key, ta_aes_key_exists};
+use secure_storage::{store_ta_aes_key, load_ta_aes_key, ta_aes_key_exists, export_ta_aes_key};
 
 
 
@@ -81,11 +81,12 @@ fn invoke_command(cmd_id: u32, params: &mut Parameters) -> Result<()> {
         0 => invoke_inference(params),
         #[cfg(feature = "encrypt-model")]
         1 => invoke_encrypt_model(params),
-        2 => invoke_decrypt_model(params),
+        // 2 => invoke_decrypt_model(params),
         3 => invoke_store_key(params),
         4 => invoke_begin_model_load(params),
         5 => invoke_push_encrypted_chunk(params),
         6 => invoke_finalize_model_load(params),
+        7 => invoke_export_aes_key(params),
         _ => {
             trace_println!("[!] Unknown command ID: {}", cmd_id);
             Err(ErrorKind::BadParameters.into())
@@ -175,38 +176,6 @@ fn invoke_encrypt_model(params: &mut Parameters) -> Result<()> {
     Ok(())
 }
 
-fn invoke_decrypt_model(params: &mut Parameters) -> Result<()> {
-    trace_println!("[+] Processing model decryption request");
-    
-    let mut p0 = unsafe { params.0.as_memref()? };
-    let mut p1 = unsafe { params.1.as_memref()? };
-    
-    let encrypted_data = p0.buffer();
-    trace_println!("[+] Received encrypted data: {} bytes", encrypted_data.len());
-    
-    if !ta_aes_key_exists() {
-        trace_println!("[!] No TA AES key found for decryption");
-        return Err(ErrorKind::ItemNotFound.into());
-    }
-    let aes_key = load_ta_aes_key()?;
-    
-    let mut key_manager = KeyManager::new(aes_key)?;
-    
-    trace_println!("[+] Decrypting data with TA AES key...");
-    let decrypted_data = key_manager.decrypt_data(encrypted_data)?;
-    trace_println!("[+] Data decrypted, size: {} bytes", decrypted_data.len());
-    
-    if p1.buffer().len() < decrypted_data.len() {
-        trace_println!("[!] Output buffer too small: {} < {}", p1.buffer().len(), decrypted_data.len());
-        return Err(ErrorKind::ShortBuffer.into());
-    }
-    
-    p1.buffer()[..decrypted_data.len()].copy_from_slice(&decrypted_data);
-    p1.set_updated_size(decrypted_data.len());
-    
-    trace_println!("[+] Decrypted data returned to host");
-    Ok(())
-}
 
 fn invoke_store_key(params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Processing key provision request");
@@ -234,6 +203,19 @@ fn ensure_key_manager() -> Result<()> {
         let aes_key = load_ta_aes_key()?;
         unsafe { KEY_MANAGER = Some(KeyManager::new(aes_key)?) };
     }
+    Ok(())
+}
+
+fn invoke_export_aes_key(params: &mut Parameters) -> Result<()> {
+    trace_println!("[+] Export AES key request received");
+    let key = export_ta_aes_key()?;
+    let mut p0 = unsafe { params.0.as_memref()? };
+    if p0.buffer().len() < key.len() {
+        trace_println!("[!] Output buffer too small for AES key");
+        return Err(ErrorKind::ShortBuffer.into());
+    }
+    p0.buffer()[..key.len()].copy_from_slice(&key);
+    p0.set_updated_size(key.len());
     Ok(())
 }
 

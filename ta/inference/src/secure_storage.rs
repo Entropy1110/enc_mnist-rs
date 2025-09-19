@@ -1,7 +1,10 @@
+use alloc::string::ToString;
 use optee_utee::{DataFlag, ObjectStorageConstants, PersistentObject, GenericObject, Result, ErrorKind};
-
+use optee_utee::property::{
+    ClientIdentity, PropertyKey, TaDescription, TaMultiSession, TeeInternalCoreVersion,
+};
 const TA_AES_KEY_ID: &[u8] = b"ta_unique_aes_key";
-
+const SECURE_UPDATE_TA_UUID: &str = "00000073-6563-7572-655f-757064617465";
 pub fn store_ta_aes_key(aes_key: &[u8; 32]) -> Result<()> {
     let obj_data_flag = DataFlag::ACCESS_READ
         | DataFlag::ACCESS_WRITE
@@ -21,6 +24,38 @@ pub fn store_ta_aes_key(aes_key: &[u8; 32]) -> Result<()> {
         Ok(mut object) => {
             object.write(aes_key)?;
             Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub fn export_ta_aes_key() -> Result<[u8; 32]> {
+
+    let client_identity = ClientIdentity.get()?;
+    if client_identity.uuid().to_string() != SECURE_UPDATE_TA_UUID {
+        return Err(ErrorKind::BadParameters.into());
+    }
+    let mut obj_id = TA_AES_KEY_ID.to_vec();
+
+    match PersistentObject::open(
+        ObjectStorageConstants::Private,
+        &mut obj_id,
+        DataFlag::ACCESS_READ,
+    ) {
+        Ok(object) => {
+            let obj_info = object.info()?;
+            if obj_info.data_size() != 32 {
+                return Err(ErrorKind::BadParameters.into());
+            }
+
+            let mut buffer = [0u8; 32];
+            let read_bytes = object.read(&mut buffer)?;
+
+            if read_bytes != 32 {
+                return Err(ErrorKind::BadParameters.into());
+            }
+
+            Ok(buffer)
         }
         Err(e) => Err(e),
     }
