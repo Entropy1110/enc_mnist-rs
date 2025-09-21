@@ -26,26 +26,27 @@ use burn::{
 
 
 mod key_manager;
-mod secure_storage;
 
 use alloc::vec::Vec;
-use key_manager::KeyManager;
-use secure_storage::{store_ta_aes_key, load_ta_aes_key, ta_aes_key_exists, export_ta_aes_key};
+use alloc::string::ToString;
+use key_manager::{
+    decrypt_model_data, encrypt_model_data, ensure_aes_key, export_aes_key, import_aes_key,
+    require_aes_key,
+};
 
 
-
-static mut KEY_MANAGER: Option<KeyManager> = None;
 
 use common::{copy_to_output, Model};
 use optee_utee::{
     ta_close_session, ta_create, ta_destroy, ta_invoke_command, ta_open_session, trace_println,
 };
-use optee_utee::{ErrorKind, Parameters, Result};
+use optee_utee::{property::{ClientIdentity, PropertyKey}, ErrorKind, LoginType, Parameters, Result};
 use proto::Image;
 use spin::Mutex;
 
 type NoStdModel = Model<NdArray>;
 const DEVICE: NdArrayDevice = NdArrayDevice::Cpu;
+const SECURE_UPDATE_TA_UUID: &str = "00000073-6563-7572-655f-757064617465";
 static MODEL: Mutex<Option<NoStdModel>> = Mutex::new(Option::None);
 static MODEL_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
@@ -86,7 +87,7 @@ fn invoke_command(cmd_id: u32, params: &mut Parameters) -> Result<()> {
         4 => invoke_begin_model_load(params),
         5 => invoke_push_encrypted_chunk(params),
         6 => invoke_finalize_model_load(params),
-        7 => invoke_export_aes_key(params),
+        // 7 => invoke_export_aes_key(params),
         _ => {
             trace_println!("[!] Unknown command ID: {}", cmd_id);
             Err(ErrorKind::BadParameters.into())
@@ -148,20 +149,10 @@ fn invoke_encrypt_model(params: &mut Parameters) -> Result<()> {
     let model_data = p0.buffer();
     trace_println!("[+] Received model data: {} bytes", model_data.len());
     
-    let aes_key = if ta_aes_key_exists() {
-        trace_println!("[+] Loading existing TA AES key for encryption");
-        load_ta_aes_key()?
-    } else {
-        trace_println!("[+] Generating new TA AES key for encryption");
-        let new_key = KeyManager::generate_aes_key()?;
-        store_ta_aes_key(&new_key)?;
-        new_key
-    };
-    
-    let mut key_manager = KeyManager::new(aes_key)?;
-    
+    ensure_aes_key()?;
+
     trace_println!("[+] Encrypting model with TA AES key...");
-    let encrypted_model = key_manager.encrypt_data(model_data)?;
+    let encrypted_model = encrypt_model_data(model_data)?;
     trace_println!("[+] Model encrypted, size: {} bytes", encrypted_model.len());
     
     if p1.buffer().len() < encrypted_model.len() {
@@ -187,41 +178,43 @@ fn invoke_store_key(params: &mut Parameters) -> Result<()> {
     }
     let mut key = [0u8; 32];
     key.copy_from_slice(key_buf);
-    store_ta_aes_key(&key)?;
-    unsafe {
-        KEY_MANAGER = Some(KeyManager::new(key)?);
-    }
-    trace_println!("[+] Secret key stored in secure storage");
+    import_aes_key(&key)?;
+    trace_println!("[+] Secret key stored in key manager");
     Ok(())
 }
 
-fn ensure_key_manager() -> Result<()> {
-    if !ta_aes_key_exists() {
-        return Err(ErrorKind::ItemNotFound.into());
+fn ensure_secure_update_caller() -> Result<()> {
+    let identity = ClientIdentity.get()?;
+    if identity.login_type() != LoginType::TrustedApp {
+        return Err(ErrorKind::AccessDenied.into());
     }
-    if unsafe { KEY_MANAGER.is_none() } {
-        let aes_key = load_ta_aes_key()?;
-        unsafe { KEY_MANAGER = Some(KeyManager::new(aes_key)?) };
+    if identity.uuid().to_string() != SECURE_UPDATE_TA_UUID {
+        return Err(ErrorKind::AccessDenied.into());
     }
     Ok(())
 }
 
 fn invoke_export_aes_key(params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Export AES key request received");
-    let key = export_ta_aes_key()?;
+    ensure_secure_update_caller()?;
+    let key = export_aes_key()?;
     let mut p0 = unsafe { params.0.as_memref()? };
-    if p0.buffer().len() < key.len() {
-        trace_println!("[!] Output buffer too small for AES key");
-        return Err(ErrorKind::ShortBuffer.into());
+    let key_len = key.len();
+    {
+        let buffer = p0.buffer();
+        if buffer.len() < key_len {
+            trace_println!("[!] Output buffer too small for AES key");
+            return Err(ErrorKind::ShortBuffer.into());
+        }
+        buffer[..key_len].copy_from_slice(&key);
     }
-    p0.buffer()[..key.len()].copy_from_slice(&key);
-    p0.set_updated_size(key.len());
+    p0.set_updated_size(key_len);
     Ok(())
 }
 
 fn invoke_begin_model_load(_params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Begin model load");
-    ensure_key_manager()?;
+    require_aes_key()?;
     let mut buf = MODEL_BUF.lock();
     buf.clear();
     Ok(())
@@ -242,14 +235,13 @@ fn invoke_push_encrypted_chunk(params: &mut Parameters) -> Result<()> {
 fn invoke_finalize_model_load(_params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Finalize model load");
     // Decrypt full encrypted buffer once
-    ensure_key_manager()?;
+    require_aes_key()?;
     let encrypted = {
         let mut buf = MODEL_BUF.lock();
         core::mem::take(&mut *buf)
     };
-    let key_manager = unsafe { KEY_MANAGER.as_mut().ok_or(ErrorKind::BadState)? };
     trace_println!("[+] Decrypting accumulated encrypted model: {} bytes", encrypted.len());
-    let plain = key_manager.decrypt_data(&encrypted)?;
+    let plain = decrypt_model_data(&encrypted)?;
     trace_println!("[+] Decrypted model size: {} bytes", plain.len());
     trace_println!("[+] Importing model with {} bytes...", plain.len());
     let imported_model = match Model::import(&DEVICE, plain) {

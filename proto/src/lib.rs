@@ -17,6 +17,7 @@
 
 #![no_std]
 pub mod inference;
+pub mod key_manager;
 
 pub const IMAGE_HEIGHT: usize = 28;
 pub const IMAGE_WIDTH: usize = 28;
