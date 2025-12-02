@@ -20,6 +20,7 @@ use image::EncodableLayout;
 use optee_teec::Context;
 use proto::{Image, IMAGE_SIZE};
 use serde_json;
+use std::time::{Instant, Duration};
 
 #[derive(serde::Deserialize)]
 struct EncryptedModelFile {
@@ -63,6 +64,8 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
     let mut ctx = Context::new()?;
     let mut caller = crate::tee::InferenceTaConnector::new(&mut ctx)?;
 
+    let mut decrypt_duration = Duration::new(0, 0);
+
     let record = if model_path.extension().and_then(|s| s.to_str()) == Some("json") {
         println!("Detected encrypted model file");
         let encrypted_data = std::fs::read(&model_path)?;
@@ -80,7 +83,10 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
                 println!("Sending encrypted chunk {}/{} ({} bytes)", chunk.id + 1, chunked_model.total_chunks, chunk.data.len());
                 caller.push_encrypted_chunk(&chunk.data)?;
             }
+            let start = Instant::now();
             caller.finalize_model_load()?;
+            decrypt_duration = start.elapsed();
+            println!("TA Decryption/Load Time: {} ms", decrypt_duration.as_millis());
             Vec::new() // no local record
         } else {
             // Fall back to single encrypted model
@@ -94,7 +100,10 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
                 println!("Sending encrypted part {} ({} bytes)", i + 1, part.len());
                 caller.push_encrypted_chunk(part)?;
             }
+            let start = Instant::now();
             caller.finalize_model_load()?;
+            decrypt_duration = start.elapsed();
+            println!("TA Decryption/Load Time: {} ms", decrypt_duration.as_millis());
             Vec::new()
         }
     } else {
@@ -139,7 +148,13 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
         .collect::<Result<Vec<_>, anyhow::Error>>()?;
     binaries.extend(images);
 
+    let start = Instant::now();
     let result = caller.infer_batch(&binaries)?;
+    let infer_duration = start.elapsed();
+    println!("TA Inference Time: {} ms", infer_duration.as_millis());
+    
+    println!("Total Execution Time (Decryption + Inference): {} ms", (decrypt_duration + infer_duration).as_millis());
+
     anyhow::ensure!(binaries.len() == result.len());
 
     for (i, binary) in args.binary.iter().enumerate() {
@@ -158,5 +173,3 @@ pub fn execute(args: &Args) -> anyhow::Result<()> {
 
     Ok(())
 }
-
-// reconstruct_chunked_model removed: we never return plaintext model to host.

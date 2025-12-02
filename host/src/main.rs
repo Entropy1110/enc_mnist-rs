@@ -35,6 +35,10 @@ enum Commands {
     StoreKey(commands::store_key::Args),
     #[cfg(feature = "encrypt-model")]
     VerifyModel(commands::verify_model::Args),
+    LocalInfer(commands::local_infer::Args),
+    Interactive(commands::interactive::Args),
+    LocalInteractive(commands::interactive_local::Args),
+    Test(commands::test::Args),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -47,5 +51,9 @@ fn main() -> anyhow::Result<()> {
         Commands::StoreKey(args) => commands::store_key::execute(&args),
         #[cfg(feature = "encrypt-model")]
         Commands::VerifyModel(args) => commands::verify_model::execute(&args),
+        Commands::LocalInfer(args) => commands::local_infer::execute(&args),
+        Commands::Interactive(args) => commands::interactive::execute(&args),
+        Commands::LocalInteractive(args) => commands::interactive_local::execute(&args),
+        Commands::Test(args) => commands::test::execute(&args),
     }
 }

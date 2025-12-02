@@ -20,3 +20,7 @@ pub mod encrypt;
 pub mod store_key;
 #[cfg(feature = "encrypt-model")]
 pub mod verify_model;
+pub mod local_infer;
+pub mod interactive;
+pub mod interactive_local;
+pub mod test;

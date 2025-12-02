@@ -40,7 +40,7 @@ use common::{copy_to_output, Model};
 use optee_utee::{
     ta_close_session, ta_create, ta_destroy, ta_invoke_command, ta_open_session, trace_println,
 };
-use optee_utee::{property::{ClientIdentity, PropertyKey}, ErrorKind, LoginType, Parameters, Result};
+use optee_utee::{property::{ClientIdentity, PropertyKey}, Time, ErrorKind, LoginType, Parameters, Result};
 use proto::Image;
 use spin::Mutex;
 
@@ -49,6 +49,10 @@ const DEVICE: NdArrayDevice = NdArrayDevice::Cpu;
 const SECURE_UPDATE_TA_UUID: &str = "00000073-6563-7572-655f-757064617465";
 static MODEL: Mutex<Option<NoStdModel>> = Mutex::new(Option::None);
 static MODEL_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+fn time_diff(start: &Time, end: &Time) -> u32 {
+    (end.seconds - start.seconds) * 1000 + (end.millis - start.millis)
+}
 
 #[ta_create]
 fn create() -> Result<()> {
@@ -122,7 +126,13 @@ fn invoke_inference(params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Model retrieved successfully");
     
     trace_println!("[+] Running forward pass...");
+    let mut start_time = Time::new();
+    start_time.system_time();
     let output = model.forward(input);
+    let mut end_time = Time::new();
+    end_time.system_time();
+    let duration = time_diff(&start_time, &end_time);
+    trace_println!("[+] Inference Time: {} ms", duration);
     trace_println!("[+] Forward pass completed");
     
     trace_println!("[+] Processing output...");
@@ -234,6 +244,8 @@ fn invoke_push_encrypted_chunk(params: &mut Parameters) -> Result<()> {
 
 fn invoke_finalize_model_load(_params: &mut Parameters) -> Result<()> {
     trace_println!("[+] Finalize model load");
+    let mut start_time = Time::new();
+    start_time.system_time();
     // Decrypt full encrypted buffer once
     require_aes_key()?;
     let encrypted = {
@@ -242,6 +254,10 @@ fn invoke_finalize_model_load(_params: &mut Parameters) -> Result<()> {
     };
     trace_println!("[+] Decrypting accumulated encrypted model: {} bytes", encrypted.len());
     let plain = decrypt_model_data(&encrypted)?;
+    let mut decrypt_time = Time::new();
+    decrypt_time.system_time();
+    let duration = time_diff(&start_time, &decrypt_time);
+    trace_println!("[+] Decryption Time: {} ms", duration);
     trace_println!("[+] Decrypted model size: {} bytes", plain.len());
     trace_println!("[+] Importing model with {} bytes...", plain.len());
     let imported_model = match Model::import(&DEVICE, plain) {
@@ -253,6 +269,10 @@ fn invoke_finalize_model_load(_params: &mut Parameters) -> Result<()> {
     };
     let mut model = MODEL.lock();
     model.replace(imported_model);
+    let mut end_time = Time::new();
+    end_time.system_time();
+    let duration = time_diff(&start_time, &end_time);
+    trace_println!("[+] Model Loading Time: {} ms", duration);
     trace_println!("[+] Model loaded and installed");
     Ok(())
 }
